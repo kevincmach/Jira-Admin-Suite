@@ -50,7 +50,7 @@ class MatchingRulesConfig:
 
 @dataclass
 class EnforcementConfig:
-    mode: str = "enforce_exact"  # enforce_exact, add_only, remove_only
+    mode: str = "enforce_exact"  # enforce_exact, add_only, remove_only, ensure_group_present, ensure_group_exact
     allow_groups: bool = True
     tolerate_missing_users: bool = True
     max_changes_per_project: int = 10
@@ -65,6 +65,7 @@ class PolicyConfig:
     user_source: UserSourceConfig
     matching_rules: MatchingRulesConfig
     enforcement: EnforcementConfig
+    target_group: Optional[str] = None
 
 
 @dataclass
@@ -133,11 +134,28 @@ def _build_project_filters(raw: Dict[str, Any]) -> ProjectFilterConfig:
     )
 
 
+_GROUP_MODES = {"ensure_group_present", "ensure_group_exact"}
+
+
 def _build_policy_config(raw: Dict[str, Any], global_filters: ProjectFilterConfig) -> PolicyConfig:
-    required_fields = ["id", "name", "role_name", "user_source"]
+    required_fields = ["id", "name", "role_name"]
     for field_name in required_fields:
         if field_name not in raw:
             raise ConfigError(f"Policy missing required field: {field_name}")
+
+    enforcement_mode = (raw.get("enforcement") or {}).get("mode", "enforce_exact")
+    target_group = raw.get("target_group")
+
+    # user_source is required for user-list policies; for group-based policies
+    # it is optional (and only used by the `policy group-audit` flow).
+    if enforcement_mode not in _GROUP_MODES and "user_source" not in raw:
+        raise ConfigError("Policy missing required field: user_source")
+
+    if enforcement_mode in _GROUP_MODES and not target_group:
+        raise ConfigError(
+            f"Policy '{raw.get('id')}' uses enforcement.mode={enforcement_mode} "
+            f"but no target_group is set."
+        )
 
     pf_raw = raw.get("project_filters", {})
     # Policy filters override global ones when provided, otherwise inherit
@@ -150,17 +168,20 @@ def _build_policy_config(raw: Dict[str, Any], global_filters: ProjectFilterConfi
         match_name_regex=pf_raw.get("match_name_regex", global_filters.match_name_regex),
     )
 
-    us_raw = raw["user_source"]
-    if "mode" not in us_raw or "identifier_type" not in us_raw:
-        raise ConfigError("user_source.mode and user_source.identifier_type are required")
-
-    user_source = UserSourceConfig(
-        mode=us_raw["mode"],
-        identifier_type=us_raw["identifier_type"],
-        users=list(us_raw.get("users", []) or []),
-        file_path=us_raw.get("file_path"),
-        jira_group=us_raw.get("jira_group"),
-    )
+    us_raw = raw.get("user_source")
+    if us_raw is None:
+        # Permitted for group-mode policies; create a stub.
+        user_source = UserSourceConfig(mode="static_list", identifier_type="username")
+    else:
+        if "mode" not in us_raw or "identifier_type" not in us_raw:
+            raise ConfigError("user_source.mode and user_source.identifier_type are required")
+        user_source = UserSourceConfig(
+            mode=us_raw["mode"],
+            identifier_type=us_raw["identifier_type"],
+            users=list(us_raw.get("users", []) or []),
+            file_path=us_raw.get("file_path"),
+            jira_group=us_raw.get("jira_group"),
+        )
 
     mr_raw = raw.get("matching_rules", {})
     matching_rules = MatchingRulesConfig(
@@ -184,6 +205,7 @@ def _build_policy_config(raw: Dict[str, Any], global_filters: ProjectFilterConfi
         user_source=user_source,
         matching_rules=matching_rules,
         enforcement=enforcement,
+        target_group=target_group,
     )
 
 

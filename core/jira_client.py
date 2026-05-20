@@ -143,23 +143,93 @@ class JiraClient:
                 continue
         return roles
 
-    def get_role_actors(self, role_id: int) -> List[JiraRoleActor]:
-        data = self._request("GET", f"/rest/api/2/role/{role_id}")
+    def get_role_actors(self, project_key: str, role_id: int) -> List[JiraRoleActor]:
+        # The global /rest/api/2/role/{id} endpoint returns the role definition,
+        # not project-scoped actors. Actors are only correct when fetched from
+        # the per-project endpoint.
+        data = self._request("GET", f"/rest/api/2/project/{project_key}/role/{role_id}")
         actors: List[JiraRoleActor] = []
         for a in data.get("actors", []):
-            actors.append(JiraRoleActor(type=a.get("type"), name=a.get("name")))
+            name = a.get("name")
+            if not name:
+                continue
+            actors.append(JiraRoleActor(type=a.get("type") or "", name=name))
         return actors
 
-    def add_role_actors(self, role_id: int, usernames: List[str]) -> None:
+    def add_role_actors(self, project_key: str, role_id: int, usernames: List[str]) -> None:
         if not usernames:
             return
-        payload = {"user": usernames}
-        self._request("POST", f"/rest/api/2/role/{role_id}", json=payload)
+        payload = {"user": list(usernames)}
+        self._request(
+            "POST",
+            f"/rest/api/2/project/{project_key}/role/{role_id}",
+            json=payload,
+        )
 
-    def remove_role_actors(self, role_id: int, usernames: List[str]) -> None:
+    def remove_role_actors(self, project_key: str, role_id: int, usernames: List[str]) -> None:
         for username in usernames:
             self._request(
                 "DELETE",
-                f"/rest/api/2/role/{role_id}",
+                f"/rest/api/2/project/{project_key}/role/{role_id}",
                 params={"user": username},
             )
+
+    def add_role_group_actors(
+        self, project_key: str, role_id: int, group_names: List[str]
+    ) -> None:
+        if not group_names:
+            return
+        payload = {"group": list(group_names)}
+        self._request(
+            "POST",
+            f"/rest/api/2/project/{project_key}/role/{role_id}",
+            json=payload,
+        )
+
+    def remove_role_group_actors(
+        self, project_key: str, role_id: int, group_names: List[str]
+    ) -> None:
+        for group_name in group_names:
+            self._request(
+                "DELETE",
+                f"/rest/api/2/project/{project_key}/role/{role_id}",
+                params={"group": group_name},
+            )
+
+    # --- Groups ---
+
+    def get_group_members(
+        self,
+        group_name: str,
+        include_inactive: bool = False,
+        page_size: int = 50,
+    ) -> List[JiraUser]:
+        users: List[JiraUser] = []
+        start = 0
+        while True:
+            data = self._request(
+                "GET",
+                "/rest/api/2/group/member",
+                params={
+                    "groupname": group_name,
+                    "includeInactiveUsers": str(include_inactive).lower(),
+                    "startAt": start,
+                    "maxResults": page_size,
+                },
+            )
+            if not data:
+                break
+            values = data.get("values", []) if isinstance(data, dict) else []
+            for u in values:
+                users.append(
+                    JiraUser(
+                        username=u.get("name") or u.get("key"),
+                        account_id=u.get("accountId"),
+                        email=u.get("emailAddress"),
+                        display_name=u.get("displayName"),
+                    )
+                )
+            if not isinstance(data, dict) or data.get("isLast", True) or not values:
+                break
+            start += len(values)
+        return users

@@ -174,6 +174,28 @@ class JiraClient:
                 params={"user": username},
             )
 
+    def add_role_group_actors(
+        self, project_key: str, role_id: int, group_names: List[str]
+    ) -> None:
+        if not group_names:
+            return
+        payload = {"group": list(group_names)}
+        self._request(
+            "POST",
+            f"/rest/api/2/project/{project_key}/role/{role_id}",
+            json=payload,
+        )
+
+    def remove_role_group_actors(
+        self, project_key: str, role_id: int, group_names: List[str]
+    ) -> None:
+        for group_name in group_names:
+            self._request(
+                "DELETE",
+                f"/rest/api/2/project/{project_key}/role/{role_id}",
+                params={"group": group_name},
+            )
+
     # --- Groups ---
 
     def get_group_members(

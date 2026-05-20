@@ -54,6 +54,26 @@ class DummyClient:
         actors = self._role_actors.get((project_key, role_id), [])
         self._role_actors[(project_key, role_id)] = [a for a in actors if a.name not in usernames]
 
+    def add_role_group_actors(self, project_key: str, role_id: int, group_names: List[str]) -> None:
+        self.added.append((project_key, role_id, list(group_names), "group"))
+        existing = {
+            a.name
+            for a in self._role_actors.get((project_key, role_id), [])
+            if "group" in (a.type or "").lower()
+        }
+        for g in group_names:
+            if g not in existing:
+                self._role_actors.setdefault((project_key, role_id), []).append(
+                    JiraRoleActor(type="atlassian-group-role-actor", name=g)
+                )
+
+    def remove_role_group_actors(self, project_key: str, role_id: int, group_names: List[str]) -> None:
+        self.removed.append((project_key, role_id, list(group_names), "group"))
+        actors = self._role_actors.get((project_key, role_id), [])
+        self._role_actors[(project_key, role_id)] = [
+            a for a in actors if not (("group" in (a.type or "").lower()) and a.name in group_names)
+        ]
+
 
 def _make_engine(dummy: DummyClient, users: List[str], use_firstname_lastname: bool = False) -> PolicyEngine:
     global_filters = ProjectFilterConfig()
@@ -65,6 +85,31 @@ def _make_engine(dummy: DummyClient, users: List[str], use_firstname_lastname: b
         user_source=UserSourceConfig(mode="static_list", identifier_type="username", users=users),
         matching_rules=MatchingRulesConfig(use_firstname_lastname=use_firstname_lastname),
         enforcement=EnforcementConfig(mode="enforce_exact", max_changes_per_project=10),
+    )
+    app_cfg = AppConfig(
+        jira=dummy.jira,
+        project_filters=global_filters,
+        policies=[policy],
+    )
+    return PolicyEngine(app_cfg, dummy)  # type: ignore[arg-type]
+
+
+def _make_group_engine(
+    dummy: DummyClient,
+    target_group: str,
+    mode: str = "ensure_group_present",
+    users: List[str] = None,
+) -> PolicyEngine:
+    global_filters = ProjectFilterConfig()
+    policy = PolicyConfig(
+        id="g1",
+        name="Group policy",
+        role_name="Role A",
+        project_filters=global_filters,
+        user_source=UserSourceConfig(mode="static_list", identifier_type="username", users=users or []),
+        matching_rules=MatchingRulesConfig(),
+        enforcement=EnforcementConfig(mode=mode, max_changes_per_project=10),
+        target_group=target_group,
     )
     app_cfg = AppConfig(
         jira=dummy.jira,
@@ -222,3 +267,116 @@ def test_apply_policy_respects_max_changes() -> None:
     engine.apply_policy("p1", force=True)
     assert any(a.name == "user1" for a in dummy._role_actors[("P1", 1)])
     assert any(a.name == "user2" for a in dummy._role_actors[("P1", 1)])
+
+
+def test_ensure_group_present_adds_missing_group() -> None:
+    dummy = DummyClient(_jira_cfg())
+    dummy._projects = [JiraProject(key="P1", name="Project 1", project_type="software")]
+    dummy._roles_by_project = {"P1": {"Role A": 1}}
+    dummy._role_actors = {
+        ("P1", 1): [JiraRoleActor(type="atlassian-user-role-actor", name="leftover.user")]
+    }
+
+    engine = _make_group_engine(dummy, target_group="role-ma-team")
+    result = engine.evaluate_policy("g1")
+    diff = result.diffs[0]
+
+    assert diff.groups_to_add == {"role-ma-team"}
+    assert diff.groups_to_remove == set()
+    assert diff.to_remove == set()  # ensure_group_present does not touch users
+    assert diff.current_users == {"leftover.user"}
+    assert diff.planned_groups == {"role-ma-team"}
+
+
+def test_ensure_group_present_noop_when_group_already_attached() -> None:
+    dummy = DummyClient(_jira_cfg())
+    dummy._projects = [JiraProject(key="P1", name="Project 1", project_type="software")]
+    dummy._roles_by_project = {"P1": {"Role A": 1}}
+    dummy._role_actors = {
+        ("P1", 1): [JiraRoleActor(type="atlassian-group-role-actor", name="Role-MA-Team")]
+    }
+
+    engine = _make_group_engine(dummy, target_group="role-ma-team")
+    diff = engine.evaluate_policy("g1").diffs[0]
+
+    assert diff.groups_to_add == set()  # case-insensitive match against existing group
+    assert diff.groups_to_remove == set()
+
+
+def test_ensure_group_exact_removes_other_groups_and_users() -> None:
+    dummy = DummyClient(_jira_cfg())
+    dummy._projects = [JiraProject(key="P1", name="Project 1", project_type="software")]
+    dummy._roles_by_project = {"P1": {"Role A": 1}}
+    dummy._role_actors = {
+        ("P1", 1): [
+            JiraRoleActor(type="atlassian-user-role-actor", name="stale.user"),
+            JiraRoleActor(type="atlassian-group-role-actor", name="old-group"),
+        ]
+    }
+
+    engine = _make_group_engine(dummy, target_group="role-ma-team", mode="ensure_group_exact")
+    diff = engine.evaluate_policy("g1").diffs[0]
+
+    assert diff.groups_to_add == {"role-ma-team"}
+    assert diff.groups_to_remove == {"old-group"}
+    assert diff.to_remove == {"stale.user"}
+    assert diff.planned_users == set()
+    assert diff.planned_groups == {"role-ma-team"}
+
+
+def test_apply_group_policy_calls_project_scoped_endpoints() -> None:
+    dummy = DummyClient(_jira_cfg())
+    dummy._projects = [JiraProject(key="P1", name="Project 1", project_type="software")]
+    dummy._roles_by_project = {"P1": {"Role A": 1}}
+    dummy._role_actors = {("P1", 1): []}
+
+    engine = _make_group_engine(dummy, target_group="role-ma-team")
+    engine.apply_policy("g1", force=True)
+
+    group_calls = [c for c in dummy.added if len(c) == 4 and c[3] == "group"]
+    assert group_calls, f"expected a group-add call, got {dummy.added}"
+    project_key, role_id, names, _ = group_calls[0]
+    assert project_key == "P1"
+    assert role_id == 1
+    assert names == ["role-ma-team"]
+
+
+def test_group_membership_audit_reports_drift() -> None:
+    dummy = DummyClient(_jira_cfg())
+    dummy._groups = {
+        "role-ma-team": [
+            JiraUser(username="user1", account_id=None, email=None, display_name=None),
+            JiraUser(username="ex.employee", account_id=None, email=None, display_name=None),
+        ]
+    }
+
+    engine = _make_group_engine(
+        dummy,
+        target_group="role-ma-team",
+        users=["user1", "user2", "user3"],
+    )
+    audit = engine.audit_group_membership("g1")
+
+    assert audit.to_add == {"user2", "user3"}
+    assert audit.to_remove == {"ex.employee"}
+    assert audit.already_present == {"user1"}
+
+
+def test_group_membership_audit_is_case_insensitive() -> None:
+    dummy = DummyClient(_jira_cfg())
+    dummy._groups = {
+        "role-ma-team": [
+            JiraUser(username="Alice.Smith", account_id=None, email=None, display_name=None),
+        ]
+    }
+
+    engine = _make_group_engine(
+        dummy,
+        target_group="role-ma-team",
+        users=["alice.smith"],
+    )
+    audit = engine.audit_group_membership("g1")
+
+    assert audit.to_add == set()
+    assert audit.to_remove == set()
+    assert audit.already_present == {"Alice.Smith"}

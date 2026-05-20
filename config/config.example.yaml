@@ -39,3 +39,39 @@ policies:
       allow_groups: true
       tolerate_missing_users: true
       max_changes_per_project: 10
+
+  # --- Group-based policy example ---
+  # Ensure the Jira group "role-mission-assurance-team" is attached to the
+  # named role on every in-scope project. The group itself defines who has
+  # access; this policy just makes sure the group is wired into each project.
+  #
+  # enforcement.mode:
+  #   ensure_group_present  -> add the group if missing; leave other actors alone
+  #   ensure_group_exact    -> add the group, remove every other group and
+  #                            every individual user actor from the role
+  #
+  # Run `policy group-audit <id>` to compare user_source against the actual
+  # members of target_group (a read-only membership audit).
+  - id: mat_group
+    name: Mission Assurance Team (group-managed)
+    role_name: "02 - Mission Assurance Team"
+    target_group: role-mission-assurance-team
+    project_filters:
+      match_key_regex: "^[A-Z]+$"
+      exclude_keys:
+        - TEST
+        - SANDBOX
+    # user_source is optional for group-mode policies. When provided, it's
+    # used by `policy group-audit` to check the group's membership.
+    user_source:
+      mode: static_list
+      identifier_type: username
+      users:
+        - alice.smith
+        - bob.jones
+        - carol.lee
+    matching_rules:
+      use_firstname_lastname: false
+    enforcement:
+      mode: ensure_group_present
+      max_changes_per_project: 10

@@ -136,11 +136,20 @@ def policy_dry_run(
                 {
                     "project": d.project.key,
                     "role_id": d.role_id,
+                    "before": {
+                        "users": sorted(d.current_users),
+                        "groups": sorted(d.current_groups),
+                    },
+                    "after": {
+                        "users": sorted(d.planned_users),
+                        "groups": sorted(d.planned_groups),
+                    },
                     "to_add": sorted(d.to_add),
                     "to_remove": sorted(d.to_remove),
+                    "groups_to_add": sorted(d.groups_to_add),
+                    "groups_to_remove": sorted(d.groups_to_remove),
                     "already_present": sorted(d.already_present),
                     "covered_via_group": sorted(d.covered_via_group),
-                    "group_actors": sorted(d.group_actors),
                     "warnings": d.warnings,
                 }
                 for d in result.diffs
@@ -152,7 +161,9 @@ def policy_dry_run(
         return
 
     click.echo(f"Policy: {result.policy.id} / {result.policy.name}")
-    click.echo(f"Total additions: {result.total_additions}, removals: {result.total_removals}")
+    click.echo(
+        f"Total additions: {result.total_additions}, removals: {result.total_removals}"
+    )
     if result.unresolved_users:
         click.echo("Unresolved users: " + ", ".join(result.unresolved_users))
     if result.ambiguous_users:
@@ -163,18 +174,81 @@ def policy_dry_run(
     for d in result.diffs:
         click.echo("")
         click.echo(f"Project {d.project.key} ({d.project.name}) role_id={d.role_id}")
+        click.echo(
+            "  Before: users=["
+            + ", ".join(sorted(d.current_users))
+            + "] groups=["
+            + ", ".join(sorted(d.current_groups))
+            + "]"
+        )
+        click.echo(
+            "  After:  users=["
+            + ", ".join(sorted(d.planned_users))
+            + "] groups=["
+            + ", ".join(sorted(d.planned_groups))
+            + "]"
+        )
         if d.to_add:
-            click.echo("  To add:            " + ", ".join(sorted(d.to_add)))
+            click.echo("  Users to add:      " + ", ".join(sorted(d.to_add)))
         if d.to_remove:
-            click.echo("  To remove:         " + ", ".join(sorted(d.to_remove)))
+            click.echo("  Users to remove:   " + ", ".join(sorted(d.to_remove)))
+        if d.groups_to_add:
+            click.echo("  Groups to add:     " + ", ".join(sorted(d.groups_to_add)))
+        if d.groups_to_remove:
+            click.echo("  Groups to remove:  " + ", ".join(sorted(d.groups_to_remove)))
         if d.already_present:
             click.echo("  Already in role:   " + ", ".join(sorted(d.already_present)))
         if d.covered_via_group:
             click.echo("  Covered via group: " + ", ".join(sorted(d.covered_via_group)))
-        if d.group_actors:
-            click.echo("  Groups on role:    " + ", ".join(sorted(d.group_actors)))
         for w in d.warnings:
             click.echo(f"  WARNING: {w}")
+
+
+@policy.command("group-audit")
+@click.argument("policy_id", type=str)
+@click.option("--json", "as_json", is_flag=True, help="Output JSON instead of text.")
+@click.pass_context
+def policy_group_audit(ctx: click.Context, policy_id: str, as_json: bool) -> None:
+    """Compare a policy's configured user list against its target_group members."""
+
+    engine = _build_engine(ctx.obj["config_path"])
+    audit = engine.audit_group_membership(policy_id)
+
+    if as_json:
+        payload = {
+            "policy": audit.policy.id,
+            "group": audit.group_name,
+            "expected_users": sorted(audit.expected_users),
+            "current_members": sorted(audit.current_members),
+            "to_add": sorted(audit.to_add),
+            "to_remove": sorted(audit.to_remove),
+            "already_present": sorted(audit.already_present),
+            "unresolved_users": audit.unresolved_users,
+            "ambiguous_users": audit.ambiguous_users,
+        }
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    click.echo(f"Policy: {audit.policy.id} / {audit.policy.name}")
+    click.echo(f"Target group: {audit.group_name}")
+    click.echo(
+        f"Expected: {len(audit.expected_users)} user(s), "
+        f"Current: {len(audit.current_members)} member(s)"
+    )
+    if audit.unresolved_users:
+        click.echo("Unresolved users: " + ", ".join(audit.unresolved_users))
+    if audit.ambiguous_users:
+        click.echo("Ambiguous users:")
+        for ident, count in audit.ambiguous_users.items():
+            click.echo(f"  {ident}: {count} candidates")
+    if audit.to_add:
+        click.echo("Add to group:       " + ", ".join(sorted(audit.to_add)))
+    if audit.to_remove:
+        click.echo("Remove from group:  " + ", ".join(sorted(audit.to_remove)))
+    if audit.already_present:
+        click.echo("Already in group:   " + ", ".join(sorted(audit.already_present)))
+    if not audit.to_add and not audit.to_remove:
+        click.echo("Group membership matches the configured user list.")
 
 
 @policy.command("apply")

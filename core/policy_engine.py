@@ -6,8 +6,26 @@ from typing import Dict, List, Optional, Set
 import re
 
 from .config import AppConfig, PolicyConfig
-from .jira_client import JiraClient, JiraProject, JiraRoleActor
+from .jira_client import JiraClient, JiraClientError, JiraProject, JiraRoleActor
 from .user_discovery import UserDiscovery, UserResolutionResult
+
+
+_USER_ACTOR_TYPES = {"atlassian-user-role-actor"}
+_GROUP_ACTOR_TYPES = {"atlassian-group-role-actor"}
+
+
+def _is_group_actor(actor_type: str) -> bool:
+    t = (actor_type or "").lower()
+    if t in _GROUP_ACTOR_TYPES:
+        return True
+    return "group-role-actor" in t
+
+
+def _is_user_actor(actor_type: str) -> bool:
+    t = (actor_type or "").lower()
+    if t in _USER_ACTOR_TYPES:
+        return True
+    return "user-role-actor" in t
 
 
 @dataclass
@@ -17,6 +35,8 @@ class ProjectRoleDiff:
     to_add: Set[str] = field(default_factory=set)
     to_remove: Set[str] = field(default_factory=set)
     warnings: List[str] = field(default_factory=list)
+    group_actors: Set[str] = field(default_factory=set)
+    covered_via_group: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -80,14 +100,17 @@ class PolicyEngine:
         # values as canonical usernames directly instead of going through
         # UserDiscovery heuristics. This matches environments where Jira role
         # actors and usernames share the same value (e.g. "Firstname.Lastname").
+        # If the policy asks for firstname.lastname matching, route to UserDiscovery
+        # even when the identifier_type is "username" (the configured strings are
+        # treated as "firstname.lastname" handles to resolve into Jira usernames).
+        if identifier_type == "username" and policy.matching_rules.use_firstname_lastname:
+            identifier_type = "firstname_lastname"
+
         if identifier_type == "username":
             canonical_usernames: Set[str] = set(identifiers)
             unresolved: List[str] = []
             ambiguous: Dict[str, int] = {}
         else:
-            if policy.matching_rules.use_firstname_lastname and identifier_type == "username":
-                identifier_type = "firstname_lastname"
-
             resolution: UserResolutionResult = self._user_discovery.resolve_identifiers(
                 identifiers,
                 identifier_type=identifier_type,
@@ -129,39 +152,99 @@ class PolicyEngine:
                 warnings=[f"Role '{policy.role_name}' not found in project {project.key}"],
             )
 
-        actors: List[JiraRoleActor] = self._client.get_role_actors(role_id)
+        actors: List[JiraRoleActor] = self._client.get_role_actors(project.key, role_id)
         individual_users: Set[str] = set()
         group_actors: Set[str] = set()
         for a in actors:
-            if "group" in (a.type or "").lower():
+            if _is_group_actor(a.type):
                 group_actors.add(a.name)
+            elif _is_user_actor(a.type):
+                individual_users.add(a.name)
             else:
+                # Unknown actor type — assume user so we never silently drop a member.
                 individual_users.add(a.name)
 
-        to_add: Set[str] = set()
-        to_remove: Set[str] = set()
+        warnings: List[str] = []
+
+        # Expand any group actors into their members so that a user already
+        # covered by a group is not treated as "missing" from the role.
+        group_member_usernames: Set[str] = set()
+        if group_actors:
+            for group_name in group_actors:
+                try:
+                    members = self._client.get_group_members(group_name)
+                except JiraClientError as exc:
+                    warnings.append(
+                        f"Could not expand group '{group_name}': {exc}"
+                    )
+                    continue
+                for m in members:
+                    if m.username:
+                        group_member_usernames.add(m.username)
+
+        # Case-insensitive comparison while preserving the original casing
+        # for API calls and reporting.
+        def _norm(s: str) -> str:
+            return s.strip().lower()
+
+        configured_by_lc: Dict[str, str] = {}
+        for u in canonical_usernames:
+            configured_by_lc.setdefault(_norm(u), u)
+
+        individual_by_lc: Dict[str, str] = {}
+        for u in individual_users:
+            individual_by_lc.setdefault(_norm(u), u)
+
+        group_lc: Set[str] = {_norm(u) for u in group_member_usernames}
+        configured_lc: Set[str] = set(configured_by_lc)
+        individual_lc: Set[str] = set(individual_by_lc)
+        covered_lc: Set[str] = individual_lc | group_lc
+
+        to_add_lc: Set[str] = set()
+        to_remove_lc: Set[str] = set()
 
         mode = policy.enforcement.mode
         if mode == "enforce_exact":
-            to_add = canonical_usernames - individual_users
-            to_remove = individual_users - canonical_usernames
+            to_add_lc = configured_lc - covered_lc
+            to_remove_lc = individual_lc - configured_lc
         elif mode == "add_only":
-            to_add = canonical_usernames - individual_users
-            to_remove = set()
+            to_add_lc = configured_lc - covered_lc
         elif mode == "remove_only":
-            to_add = set()
-            to_remove = individual_users - canonical_usernames
+            to_remove_lc = individual_lc - configured_lc
         else:
             raise ValueError(f"Unsupported enforcement mode: {mode}")
 
+        # Map back to original casings. For additions, prefer the configured
+        # casing (that's what the user typed). For removals, use the casing
+        # Jira reported, because that's what the DELETE call needs.
+        to_add: Set[str] = {configured_by_lc[lc] for lc in to_add_lc}
+        to_remove: Set[str] = {individual_by_lc[lc] for lc in to_remove_lc}
+
+        # Users in the configured list who are only "in" via group membership.
+        covered_via_group: Set[str] = {
+            configured_by_lc[lc]
+            for lc in (configured_lc & group_lc) - individual_lc
+        }
+
+        # Surface configured users who are present in groups in the role but
+        # also present individually under a different casing — that's harmless
+        # but worth noting so the operator can clean up duplicates.
+        if mode == "enforce_exact":
+            unmanaged_group_only_lc = group_lc - configured_lc - individual_lc
+            if unmanaged_group_only_lc:
+                warnings.append(
+                    f"{len(unmanaged_group_only_lc)} user(s) present via group "
+                    f"membership are not in the configured list and cannot be "
+                    f"removed by this tool (groups: {sorted(group_actors)})."
+                )
+
         max_changes = policy.enforcement.max_changes_per_project
         if max_changes is not None and (len(to_add) + len(to_remove)) > max_changes:
-            warnings = [
-                f"Change count {len(to_add) + len(to_remove)} exceeds max_changes_per_project={max_changes}.",
-                "Use --force or increase the limit to apply.",
-            ]
-        else:
-            warnings = []
+            warnings.append(
+                f"Change count {len(to_add) + len(to_remove)} exceeds "
+                f"max_changes_per_project={max_changes}. Use --force or "
+                f"increase the limit to apply."
+            )
 
         return ProjectRoleDiff(
             project=project,
@@ -169,6 +252,8 @@ class PolicyEngine:
             to_add=to_add,
             to_remove=to_remove,
             warnings=warnings,
+            group_actors=group_actors,
+            covered_via_group=covered_via_group,
         )
 
     # --- Application ---
@@ -197,8 +282,12 @@ class PolicyEngine:
                 continue
 
             if diff.to_add:
-                self._client.add_role_actors(diff.role_id, sorted(diff.to_add))
+                self._client.add_role_actors(
+                    diff.project.key, diff.role_id, sorted(diff.to_add)
+                )
             if diff.to_remove:
-                self._client.remove_role_actors(diff.role_id, sorted(diff.to_remove))
+                self._client.remove_role_actors(
+                    diff.project.key, diff.role_id, sorted(diff.to_remove)
+                )
 
         return result

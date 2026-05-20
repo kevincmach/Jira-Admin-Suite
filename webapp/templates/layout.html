@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{ app_title }}</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        margin: 2rem;
+      }
+      header {
+        margin-bottom: 1.5rem;
+      }
+      .flash-messages {
+        margin-bottom: 1rem;
+        padding: 0;
+        list-style: none;
+      }
+      .flash-success {
+        color: #0b7a0b;
+      }
+      .flash-error {
+        color: #b00020;
+      }
+      .flash-info {
+        color: #00529b;
+      }
+      main {
+        display: flex;
+        gap: 2rem;
+      }
+      .panel {
+        border: 1px solid #ddd;
+        padding: 1rem;
+        border-radius: 4px;
+      }
+      .panel-left {
+        width: 260px;
+        flex-shrink: 0;
+      }
+      .panel-right {
+        flex-grow: 1;
+      }
+      pre {
+        background: #f5f5f5;
+        padding: 0.75rem;
+        overflow-x: auto;
+      }
+      ul.policy-list {
+        list-style: none;
+        padding-left: 0;
+      }
+      ul.policy-list li {
+        margin-bottom: 0.25rem;
+      }
+      button {
+        padding: 0.35rem 0.75rem;
+        cursor: pointer;
+      }
+      input[type="text"],
+      select {
+        padding: 0.25rem 0.5rem;
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+      }
+      form .field {
+        margin-bottom: 0.75rem;
+      }
+      .diff-card {
+        border: 1px solid #ccc;
+        padding: 0.5rem;
+        margin-bottom: 0.5rem;
+      }
+      .warning {
+        color: #b36b00;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>{{ app_title }}</h1>
+    </header>
+
+    <section>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <ul class="flash-messages">
+            {% for category, message in messages %}
+              <li class="flash-{{ category }}">
+                <strong>{{ category|capitalize }}:</strong> {{ message }}
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      {% endwith %}
+    </section>
+
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

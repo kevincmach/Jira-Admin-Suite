@@ -1,0 +1,114 @@
+{% extends "layout.html" %}
+
+{% block content %}
+  <div class="panel panel-left">
+    <h2>Policies</h2>
+    {% if policies %}
+      <ul class="policy-list">
+        {% for p in policies %}
+          <li>
+            <label>
+              <input
+                type="radio"
+                name="policy_id_radio"
+                value="{{ p.id }}"
+                form="policy-form"
+                {% if p.id == selected_policy_id %}checked{% endif %}
+              />
+              {{ p.id }} – {{ p.name }}
+            </label>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>No policies found. Check your config.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel panel-right">
+    <h2>Run policy</h2>
+    <form id="policy-form" method="post">
+      <input type="hidden" name="policy_id" id="policy_id" value="{{ selected_policy_id or '' }}" />
+
+      <div class="field">
+        <label for="project_key">Project key (optional)</label>
+        <input
+          type="text"
+          id="project_key"
+          name="project_key"
+          value="{{ project_key }}"
+          placeholder="e.g. MYPROJECT"
+        />
+      </div>
+
+      <div class="field">
+        <button type="submit" name="action" value="plan">Dry-run (plan only)</button>
+        <button type="submit" name="action" value="apply">Apply policy</button>
+      </div>
+    </form>
+
+    {% if plan_result %}
+      <hr />
+      <h3>Result</h3>
+
+      <p>
+        Policy: {{ plan_result.policy.id if plan_result.policy else "?" }}<br />
+        Total additions: {{ plan_result.total_additions }}<br />
+        Total removals: {{ plan_result.total_removals }}
+      </p>
+
+      {% if plan_result.unresolved_users %}
+        <h4>Unresolved users</h4>
+        <ul>
+          {% for u in plan_result.unresolved_users %}
+            <li>{{ u }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if plan_result.ambiguous_users %}
+        <h4>Ambiguous users</h4>
+        <ul>
+          {% for ident, count in plan_result.ambiguous_users.items() %}
+            <li>{{ ident }}: {{ count }} candidates</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if plan_result.diffs %}
+        <h4>Per-project diff</h4>
+        {% for d in plan_result.diffs %}
+          <div class="diff-card">
+            <strong>{{ d.project.key }}</strong>
+            {% if d.role_id is not none %}
+              (role_id={{ d.role_id }})
+            {% endif %}
+            {% if d.to_add %}
+              <p>To add: {{ d.to_add | join(', ') }}</p>
+            {% endif %}
+            {% if d.to_remove %}
+              <p>To remove: {{ d.to_remove | join(', ') }}</p>
+            {% endif %}
+            {% if d.warnings %}
+              {% for w in d.warnings %}
+                <p class="warning">{{ w }}</p>
+              {% endfor %}
+            {% endif %}
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <script>
+    // Keep hidden policy_id in sync with selected radio.
+    document.addEventListener("change", (event) => {
+      if (event.target.name === "policy_id_radio") {
+        const hidden = document.getElementById("policy_id");
+        if (hidden) {
+          hidden.value = event.target.value;
+        }
+      }
+    });
+  </script>
+{% endblock %}

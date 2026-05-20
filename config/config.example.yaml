@@ -1,0 +1,41 @@
+jira:
+  base_url: "https://jira.example.com"
+  auth:
+    mode: "basic"           # or "token"
+    username_env_var: "JIRA_USERNAME"
+    password_env_var: "JIRA_PASSWORD"
+    token_env_var: "JIRA_TOKEN"
+
+project_filters:
+  include_keys: []
+  exclude_keys: []
+  include_types: []
+  exclude_types: []
+  match_key_regex: null
+  match_name_regex: null
+
+policies:
+  - id: mission_assurance_team
+    name: 02 - Mission Assurance Team Policy
+    role_name: "02 - Mission Assurance Team"
+    project_filters:
+      match_key_regex: "^[A-Z]+$"
+      exclude_keys:
+        - TEST
+        - SANDBOX
+    user_source:
+      mode: static_list
+      identifier_type: username
+      users:
+        - alice.smith
+        - bob.jones
+        - carol.lee
+    matching_rules:
+      use_firstname_lastname: true
+      email_domain_whitelist:
+        - example.com
+    enforcement:
+      mode: enforce_exact
+      allow_groups: true
+      tolerate_missing_users: true
+      max_changes_per_project: 10

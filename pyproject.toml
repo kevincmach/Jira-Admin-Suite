@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jira-admin-suite"
+version = "0.1.0"
+description = "Jira Data Center admin suite for project roles, permissions, and related admin tasks"
+requires-python = ">=3.10"
+authors = [{ name = "Admin", email = "admin@example.com" }]
+readme = "README.md"
+dependencies = [
+  "click>=8.1",
+  "pyyaml>=6.0",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+api = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+]
+
+[project.scripts]
+jira-admin-suite = "cli.main:main"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+testpaths = ["tests"]

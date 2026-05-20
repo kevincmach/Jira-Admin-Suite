@@ -138,6 +138,9 @@ def policy_dry_run(
                     "role_id": d.role_id,
                     "to_add": sorted(d.to_add),
                     "to_remove": sorted(d.to_remove),
+                    "already_present": sorted(d.already_present),
+                    "covered_via_group": sorted(d.covered_via_group),
+                    "group_actors": sorted(d.group_actors),
                     "warnings": d.warnings,
                 }
                 for d in result.diffs
@@ -161,9 +164,15 @@ def policy_dry_run(
         click.echo("")
         click.echo(f"Project {d.project.key} ({d.project.name}) role_id={d.role_id}")
         if d.to_add:
-            click.echo("  To add: " + ", ".join(sorted(d.to_add)))
+            click.echo("  To add:            " + ", ".join(sorted(d.to_add)))
         if d.to_remove:
-            click.echo("  To remove: " + ", ".join(sorted(d.to_remove)))
+            click.echo("  To remove:         " + ", ".join(sorted(d.to_remove)))
+        if d.already_present:
+            click.echo("  Already in role:   " + ", ".join(sorted(d.already_present)))
+        if d.covered_via_group:
+            click.echo("  Covered via group: " + ", ".join(sorted(d.covered_via_group)))
+        if d.group_actors:
+            click.echo("  Groups on role:    " + ", ".join(sorted(d.group_actors)))
         for w in d.warnings:
             click.echo(f"  WARNING: {w}")
 

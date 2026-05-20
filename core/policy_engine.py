@@ -37,6 +37,7 @@ class ProjectRoleDiff:
     warnings: List[str] = field(default_factory=list)
     group_actors: Set[str] = field(default_factory=set)
     covered_via_group: Set[str] = field(default_factory=set)
+    already_present: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -226,6 +227,12 @@ class PolicyEngine:
             for lc in (configured_lc & group_lc) - individual_lc
         }
 
+        # Configured users who are already directly in the role (the "no
+        # action needed" bucket).
+        already_present: Set[str] = {
+            configured_by_lc[lc] for lc in configured_lc & individual_lc
+        }
+
         # Surface configured users who are present in groups in the role but
         # also present individually under a different casing — that's harmless
         # but worth noting so the operator can clean up duplicates.
@@ -254,6 +261,7 @@ class PolicyEngine:
             warnings=warnings,
             group_actors=group_actors,
             covered_via_group=covered_via_group,
+            already_present=already_present,
         )
 
     # --- Application ---
